@@ -620,6 +620,8 @@ def generate_gcode(
         f.write(f"(X step: {X_STEP_MM:.3f} mm, A step: {A_STEP_DEG:.4f} deg)\n")
         f.write(f"(G-code tolerance: Z {GCODE_Z_TOLERANCE_MM:.3f} mm, A {GCODE_A_TOLERANCE_DEG:.3f} deg)\n")
         f.write("\nG21\nG90\nG94\n")
+        f.write("S20000\n")
+        f.write("M03\n")
 
         safe_z = stock_tool_radius + SAFE_CLEARANCE_MM
         f.write(f"G0 Z{safe_z:.3f}\n")
