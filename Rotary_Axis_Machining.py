@@ -1,5 +1,5 @@
 """
-Brian Rotary CAM v1.0 - Indexed XZA
+Brian Rotary CAM v1.1 - Indexed XZA
 
 Purpose
 -------
@@ -237,9 +237,7 @@ def write_xz_pass(f, x_profile, z_profile, a_angle, reverse=False, feed=700.0):
     if not indexes:
         return
 
-    # A is intentionally fixed for the entire cutting traverse.
-    f.write(f"G0 A{a_angle:.5f}\n")
-
+    # A is positioned by the caller and remains fixed for the entire cutting traverse.
     i0 = indexes[0]
     f.write(f"G1 X{x_profile[i0]:.4f} Z{z_profile[i0]:.4f} F{feed:.1f}\n")
 
@@ -266,7 +264,7 @@ def write_xz_pass(f, x_profile, z_profile, a_angle, reverse=False, feed=700.0):
 
 def write_header(f, operation, stock_diameter, cutter_diameter, tip_radius,
                  a_step, pass_count, spacing, x_step, feed, extra_lines):
-    f.write(f"(Brian Rotary CAM v1.0 - Indexed XZA - {operation})\n")
+    f.write(f"(Brian Rotary CAM v1.1 - Indexed XZA - {operation})\n")
     f.write("(WARNING: inspect in Mach3 and air-cut before machining)\n")
     f.write("(A indexes between passes and remains stationary during each X/Z cut)\n")
     f.write("(X = longitudinal axis, A = rotary axis, Z0 = rotary centreline)\n")
@@ -349,24 +347,35 @@ def generate_finishing_gcode(output_path, x_relative, machine_angles_deg, radius
             a_step, pass_count, spacing, x_step, feed,
             [
                 "Simple radial tip-radius compensation",
+                "Continuous finishing: no Z retract between indexed X/Z passes",
+                "A indexing feed is 25% of finishing X/Z feed",
                 f"Minimum cutter-centre Z: {min_cutter_z:.3f} mm",
             ],
         )
         f.write(f"G0 Z{safe_z:.4f}\n")
         f.write(f"G0 X{x_relative[0]:.4f}\n\n")
-        f.write("(Indexed finishing passes)\n")
+        a_index_feed = feed * 0.25
+        f.write("(Indexed finishing passes - continuous between X/Z traverses)\n")
+        f.write(f"(A indexing feed: {a_index_feed:.1f} = 25% of finishing X/Z feed)\n")
 
         reverse = False
         for j, a_angle in enumerate(machine_angles_deg):
             z_profile = finish_z[:, j]
-            f.write(f"G0 Z{safe_z:.4f}\n")
-            start_x = x_relative[-1] if reverse else x_relative[0]
-            f.write(f"G0 X{start_x:.4f}\n")
-            f.write(f"G0 A{a_angle:.5f}\n")
-            f.write(f"G0 Z{z_profile[-1 if reverse else 0]:.4f}\n")
+            if j == 0:
+                # Only the first finishing pass approaches from safe Z.
+                start_x = x_relative[0]
+                f.write(f"G0 X{start_x:.4f}\n")
+                f.write(f"G0 A{a_angle:.5f}\n")
+                f.write(f"G0 Z{z_profile[0]:.4f}\n")
+            else:
+                # Roughing has already cleared the stock. Keep the cutter down and
+                # index A slowly at the end of the previous serpentine pass.
+                f.write(f"G1 A{a_angle:.5f} F{a_index_feed:.1f}\n")
+
             write_xz_pass(f, x_relative, z_profile, a_angle, reverse=reverse, feed=feed)
             reverse = not reverse
 
+        # Retract only once, after the final finishing traverse.
         f.write(f"\nG0 Z{safe_z:.4f}\n")
         f.write("M05\nM30\n")
 
@@ -599,7 +608,7 @@ def process_job(stl_path, params, status_callback=None):
 class RotaryCamUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Brian Rotary CAM v1.0 - Indexed XZA")
+        self.root.title("Brian Rotary CAM v1.1 - Indexed XZA")
         self.root.resizable(False, False)
 
         self.stl_var = tk.StringVar()
