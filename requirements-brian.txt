@@ -1,0 +1,6 @@
+numpy
+trimesh
+pyvista
+pyvistaqt
+PySide6
+pyinstaller
