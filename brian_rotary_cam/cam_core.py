@@ -4,12 +4,12 @@ This module deliberately contains no GUI or visualisation dependencies.
 
 Purpose
 -------
-Convert a radially machinable STL into TWO simple Mach3 X/A/Z G-code files:
+Convert a radially machinable STL into TWO simple Mach3 X/A/Z or Y/A/Z files:
     <name>_roughing.tap
     <name>_finishing.tap
 
 Design goals for Brian's first practical version:
-- A is indexed BETWEEN passes and remains stationary during each X/Z cutting pass.
+- A is indexed BETWEEN passes and remains stationary during each longitudinal/Z pass.
 - Roughing and finishing are separate files so tool changes are completely manual.
 - A-step can be calculated automatically from cutter diameter and stock diameter.
 - Roughing removes stock in depth-limited layers and leaves a user-set allowance.
@@ -54,6 +54,7 @@ ROUGH_MIN_CUTTER_Z_DEFAULT = 5.0
 
 FINISH_CUTTER_DIAMETER_DEFAULT = 3.0
 FINISH_TIP_RADIUS_DEFAULT = 1.5
+FINISH_ENTRY_DEPTH_DEFAULT = 2.5
 FINISH_FEED_DEFAULT = 700.0
 FINISH_MIN_CUTTER_Z_DEFAULT = 5.0
 
@@ -230,15 +231,16 @@ def sample_angles_for_machine_angles(machine_angles_deg):
 # G-CODE WRITING
 # ============================================================
 
-def write_xz_pass(f, x_profile, z_profile, a_angle, reverse=False, feed=700.0):
-    """Write one fixed-A X/Z cutting pass, simplifying only nearly unchanged Z."""
+def write_xz_pass(f, x_profile, z_profile, a_angle, reverse=False, feed=700.0,
+                  linear_axis="X"):
+    """Write one fixed-A longitudinal/Z pass using machine X or machine Y."""
     indexes = list(range(len(x_profile) - 1, -1, -1)) if reverse else list(range(len(x_profile)))
     if not indexes:
         return
 
     # A is positioned by the caller and remains fixed for the entire cutting traverse.
     i0 = indexes[0]
-    f.write(f"G1 X{x_profile[i0]:.4f} Z{z_profile[i0]:.4f} F{feed:.1f}\n")
+    f.write(f"G1 {linear_axis}{x_profile[i0]:.4f} Z{z_profile[i0]:.4f} F{feed:.1f}\n")
 
     ref_z = float(z_profile[i0])
     last_skipped = None
@@ -254,25 +256,26 @@ def write_xz_pass(f, x_profile, z_profile, a_angle, reverse=False, feed=700.0):
 
         if last_skipped is not None:
             k = last_skipped
-            f.write(f"G1 X{x_profile[k]:.4f} Z{z_profile[k]:.4f}\n")
+            f.write(f"G1 {linear_axis}{x_profile[k]:.4f} Z{z_profile[k]:.4f}\n")
             last_skipped = None
 
-        f.write(f"G1 X{x_profile[i]:.4f} Z{z_profile[i]:.4f}\n")
+        f.write(f"G1 {linear_axis}{x_profile[i]:.4f} Z{z_profile[i]:.4f}\n")
         ref_z = z
 
 
 def write_header(f, operation, stock_diameter, cutter_diameter, tip_radius,
-                 a_step, pass_count, spacing, x_step, feed, extra_lines):
-    f.write(f"(Brian Rotary CAM v1.1 - Indexed XZA - {operation})\n")
+                 a_step, pass_count, spacing, x_step, feed, extra_lines,
+                 linear_axis="X"):
+    f.write(f"(Brian Rotary CAM v1.5 - Indexed {linear_axis}AZ - {operation})\n")
     f.write("(WARNING: inspect in Mach3 and air-cut before machining)\n")
-    f.write("(A indexes between passes and remains stationary during each X/Z cut)\n")
-    f.write("(X = longitudinal axis, A = rotary axis, Z0 = rotary centreline)\n")
+    f.write(f"(A indexes between passes and remains stationary during each {linear_axis}/Z cut)\n")
+    f.write(f"({linear_axis} = longitudinal axis, A = rotary axis, Z0 = rotary centreline)\n")
     f.write(f"(Stock diameter: {stock_diameter:.3f} mm)\n")
     f.write(f"(Cutter diameter: {cutter_diameter:.3f} mm)\n")
     f.write(f"(Tip/ball radius: {tip_radius:.3f} mm)\n")
     f.write(f"(A divisions: {pass_count:d}, A step: {a_step:.5f} deg)\n")
     f.write(f"(Approx spacing at stock OD: {spacing:.3f} mm)\n")
-    f.write(f"(X step: {x_step:.3f} mm)\n")
+    f.write(f"({linear_axis} step: {x_step:.3f} mm)\n")
     f.write(f"(Cut feed: {feed:.1f} mm/min)\n")
     f.write("(Estimated cut time: __TIME__)\n")
     f.write("(Undercuts/internal radial surfaces ignored; outer envelope used)\n")
@@ -286,7 +289,7 @@ def write_header(f, operation, stock_diameter, cutter_diameter, tip_radius,
 def generate_roughing_gcode(output_path, x_relative, machine_angles_deg, radius_map,
                              stock_radius, stock_diameter, cutter_diameter, tip_radius,
                              depth_per_pass, allowance, min_cutter_z, a_step,
-                             pass_count, spacing, feed, x_step):
+                             pass_count, spacing, feed, x_step, linear_axis="X"):
     # Simple radial cutter-centre target. Roughing stays allowance outside finish surface.
     final_z = np.maximum(radius_map + tip_radius + allowance, min_cutter_z)
     stock_tool_radius = stock_radius + tip_radius
@@ -309,10 +312,10 @@ def generate_roughing_gcode(output_path, x_relative, machine_angles_deg, radius_
                 f"Maximum radial depth/pass: {depth_per_pass:.3f} mm",
                 f"Depth layers: {len(levels):d}",
                 f"Minimum cutter-centre Z: {min_cutter_z:.3f} mm",
-            ],
+            ], linear_axis,
         )
         f.write(f"G0 Z{safe_z:.4f}\n")
-        f.write(f"G0 X{x_relative[0]:.4f}\n\n")
+        f.write(f"G0 {linear_axis}{x_relative[0]:.4f}\n\n")
 
         reverse = False
         for layer_index, level in enumerate(levels, start=1):
@@ -322,10 +325,11 @@ def generate_roughing_gcode(output_path, x_relative, machine_angles_deg, radius_
                 # Retract before every index; simple and deliberately conservative.
                 f.write(f"G0 Z{safe_z:.4f}\n")
                 start_x = x_relative[-1] if reverse else x_relative[0]
-                f.write(f"G0 X{start_x:.4f}\n")
+                f.write(f"G0 {linear_axis}{start_x:.4f}\n")
                 f.write(f"G0 A{a_angle:.5f}\n")
                 f.write(f"G0 Z{z_profile[-1 if reverse else 0]:.4f}\n")
-                write_xz_pass(f, x_relative, z_profile, a_angle, reverse=reverse, feed=feed)
+                write_xz_pass(f, x_relative, z_profile, a_angle, reverse=reverse,
+                              feed=feed, linear_axis=linear_axis)
                 reverse = not reverse
             f.write("\n")
 
@@ -335,10 +339,27 @@ def generate_roughing_gcode(output_path, x_relative, machine_angles_deg, radius_
 
 def generate_finishing_gcode(output_path, x_relative, machine_angles_deg, radius_map,
                               stock_radius, stock_diameter, cutter_diameter, tip_radius,
-                              min_cutter_z, a_step, pass_count, spacing, feed, x_step):
+                              min_cutter_z, a_step, pass_count, spacing, feed, x_step,
+                              linear_axis="X",
+                              entry_depth_per_pass=FINISH_ENTRY_DEPTH_DEFAULT):
+    if entry_depth_per_pass <= 0:
+        raise ValueError("Finishing entry depth per layer must be greater than zero.")
+
     finish_z = np.maximum(radius_map + tip_radius, min_cutter_z)
     stock_tool_radius = stock_radius + tip_radius
     safe_z = stock_tool_radius + SAFE_CLEARANCE_MM
+
+    # Establish the first finishing corridor without plunging directly from stock
+    # radius to the prescribed surface. Each clipped profile is everywhere on or
+    # outside the exact first finishing profile, and the last layer is exact.
+    first_profile = finish_z[:, 0]
+    first_minimum = float(np.min(first_profile))
+    entry_levels = []
+    level = stock_tool_radius - entry_depth_per_pass
+    while level > first_minimum + 1e-9:
+        entry_levels.append(level)
+        level -= entry_depth_per_pass
+    entry_levels.append(first_minimum)
 
     with open(output_path, "w", newline="\n") as f:
         write_header(
@@ -346,32 +367,51 @@ def generate_finishing_gcode(output_path, x_relative, machine_angles_deg, radius
             a_step, pass_count, spacing, x_step, feed,
             [
                 "Simple radial tip-radius compensation",
-                "Continuous finishing: no Z retract between indexed X/Z passes",
-                "A indexing feed is 25% of finishing X/Z feed",
+                f"Introductory finishing entry depth/layer: {entry_depth_per_pass:.3f} mm",
+                f"Introductory finishing entry layers at first A angle: {len(entry_levels):d}",
+                "Operator must verify sufficient tapered cutting length for full depth",
+                f"Continuous finishing: no Z retract between indexed {linear_axis}/Z passes",
+                f"A indexing feed is 25% of finishing {linear_axis}/Z feed",
                 f"Minimum cutter-centre Z: {min_cutter_z:.3f} mm",
-            ],
+            ], linear_axis,
         )
         f.write(f"G0 Z{safe_z:.4f}\n")
-        f.write(f"G0 X{x_relative[0]:.4f}\n\n")
+        f.write(f"G0 {linear_axis}{x_relative[0]:.4f}\n\n")
         a_index_feed = feed * 0.25
-        f.write("(Indexed finishing passes - continuous between X/Z traverses)\n")
-        f.write(f"(A indexing feed: {a_index_feed:.1f} = 25% of finishing X/Z feed)\n")
 
+        first_a = float(machine_angles_deg[0])
         reverse = False
-        for j, a_angle in enumerate(machine_angles_deg):
-            z_profile = finish_z[:, j]
-            if j == 0:
-                # Only the first finishing pass approaches from safe Z.
-                start_x = x_relative[0]
-                f.write(f"G0 X{start_x:.4f}\n")
-                f.write(f"G0 A{a_angle:.5f}\n")
-                f.write(f"G0 Z{z_profile[0]:.4f}\n")
-            else:
-                # Roughing has already cleared the stock. Keep the cutter down and
-                # index A slowly at the end of the previous serpentine pass.
-                f.write(f"G1 A{a_angle:.5f} F{a_index_feed:.1f}\n")
+        f.write("(Introductory stepped entry at first finishing A angle)\n")
+        for layer_index, level in enumerate(entry_levels, start=1):
+            z_profile = np.maximum(first_profile, level)
+            f.write(
+                f"(Finishing entry layer {layer_index} of {len(entry_levels)} "
+                f"- limiter Z {level:.4f})\n"
+            )
+            f.write(f"G0 Z{safe_z:.4f}\n")
+            start_x = x_relative[-1] if reverse else x_relative[0]
+            f.write(f"G0 {linear_axis}{start_x:.4f}\n")
+            f.write(f"G0 A{first_a:.5f}\n")
+            # Feed down at the layer edge: this is an intentional cutting entry,
+            # not a rapid plunge into uncleared stock.
+            f.write(f"G1 Z{z_profile[-1 if reverse else 0]:.4f} F{feed:.1f}\n")
+            write_xz_pass(
+                f, x_relative, z_profile, first_a, reverse=reverse,
+                feed=feed, linear_axis=linear_axis,
+            )
+            reverse = not reverse
 
-            write_xz_pass(f, x_relative, z_profile, a_angle, reverse=reverse, feed=feed)
+        f.write(f"\n(Indexed finishing passes - continuous between {linear_axis}/Z traverses)\n")
+        f.write(f"(A indexing feed: {a_index_feed:.1f} = 25% of finishing {linear_axis}/Z feed)\n")
+
+        # The final entry layer has already machined the exact first finishing
+        # profile. Continue from its endpoint with the second indexed angle.
+        for j, a_angle in enumerate(machine_angles_deg[1:], start=1):
+            z_profile = finish_z[:, j]
+            f.write(f"G1 A{a_angle:.5f} F{a_index_feed:.1f}\n")
+
+            write_xz_pass(f, x_relative, z_profile, a_angle, reverse=reverse,
+                          feed=feed, linear_axis=linear_axis)
             reverse = not reverse
 
         # Retract only once, after the final finishing traverse.
@@ -379,9 +419,10 @@ def generate_finishing_gcode(output_path, x_relative, machine_angles_deg, radius
         f.write("M05\nM30\n")
 
 
-def estimate_gcode_time(output_path, default_feed):
-    """Estimate G1 X/Z time. A indexing and G0 time are intentionally ignored."""
-    current_x = None
+def estimate_gcode_time(output_path, default_feed, linear_axis="X"):
+    """Estimate G1 longitudinal/Z time; A indexing and G0 time are ignored."""
+    linear_axis = linear_axis.upper()
+    current_linear = None
     current_z = None
     current_feed = float(default_feed)
     total_distance = 0.0
@@ -394,7 +435,7 @@ def estimate_gcode_time(output_path, default_feed):
             if not line or not line.startswith("G1"):
                 continue
 
-            new_x = current_x
+            new_linear = current_linear
             new_z = current_z
             feed = current_feed
             for word in line.split():
@@ -405,23 +446,23 @@ def estimate_gcode_time(output_path, default_feed):
                     value = float(word[1:])
                 except ValueError:
                     continue
-                if letter == "X":
-                    new_x = value
+                if letter == linear_axis:
+                    new_linear = value
                 elif letter == "Z":
                     new_z = value
                 elif letter == "F":
                     feed = value
 
             current_feed = feed
-            if current_x is not None and current_z is not None:
-                dx = 0.0 if new_x is None else new_x - current_x
+            if current_linear is not None and current_z is not None:
+                dx = 0.0 if new_linear is None else new_linear - current_linear
                 dz = 0.0 if new_z is None else new_z - current_z
                 distance = math.hypot(dx, dz)
                 if distance > 0 and feed > 0:
                     total_distance += distance
                     total_minutes += distance / feed
 
-            current_x = new_x
+            current_linear = new_linear
             current_z = new_z
             g1_moves += 1
 
@@ -460,6 +501,14 @@ def parse_optional_float(text):
 
 def process_job(stl_path, params, status_callback=None):
     stl_path = Path(stl_path)
+    linear_axis = str(params.get("linear_axis", "X")).strip().upper()
+    if linear_axis not in ("X", "Y"):
+        raise ValueError("Rotary alignment must use machine X or machine Y.")
+    finish_entry_depth = float(
+        params.get("finish_entry_depth_per_pass", FINISH_ENTRY_DEPTH_DEFAULT)
+    )
+    if finish_entry_depth <= 0:
+        raise ValueError("Finishing entry depth per layer must be greater than zero.")
     if not stl_path.exists():
         raise FileNotFoundError(f"Cannot find STL file: {stl_path}")
 
@@ -557,6 +606,7 @@ def process_job(stl_path, params, status_callback=None):
         params["rough_cutter_diameter"], params["rough_tip_radius"],
         params["rough_depth_per_pass"], params["rough_allowance"], params["rough_min_z"],
         rough_a_step, rough_passes, rough_spacing, params["rough_feed"], x_step,
+        linear_axis,
     )
 
     if status_callback:
@@ -566,10 +616,16 @@ def process_job(stl_path, params, status_callback=None):
         stock_radius, stock_diameter,
         params["finish_cutter_diameter"], params["finish_tip_radius"], params["finish_min_z"],
         finish_a_step, finish_passes, finish_spacing, params["finish_feed"], x_step,
+        linear_axis,
+        finish_entry_depth,
     )
 
-    rough_minutes, rough_moves, rough_distance = estimate_gcode_time(rough_path, params["rough_feed"])
-    finish_minutes, finish_moves, finish_distance = estimate_gcode_time(finish_path, params["finish_feed"])
+    rough_minutes, rough_moves, rough_distance = estimate_gcode_time(
+        rough_path, params["rough_feed"], linear_axis
+    )
+    finish_minutes, finish_moves, finish_distance = estimate_gcode_time(
+        finish_path, params["finish_feed"], linear_axis
+    )
     update_time_header(rough_path, rough_minutes)
     update_time_header(finish_path, finish_minutes)
 
@@ -589,6 +645,7 @@ def process_job(stl_path, params, status_callback=None):
         "finish_passes": finish_passes,
         "finish_spacing": finish_spacing,
         "finish_manual": finish_manual,
+        "finish_entry_depth_per_pass": finish_entry_depth,
         "rough_missing": int(rough_missing.sum()),
         "finish_missing": int(finish_missing.sum()),
         "rough_minutes": rough_minutes,
@@ -599,5 +656,5 @@ def process_job(stl_path, params, status_callback=None):
         "finish_distance": finish_distance,
         "end_inset": effective_end_inset,
         "x_origin": first_x,
+        "linear_axis": linear_axis,
     }
-
