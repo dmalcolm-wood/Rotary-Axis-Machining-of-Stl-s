@@ -38,9 +38,13 @@ class RotaryViewer(QtWidgets.QWidget):
         self.rebuild()
         self.fit_view()
 
-    def load_toolpaths(self, rough_path, finish_path, x_origin):
-        self.paths["rough"] = gcode_segments_for_view(rough_path, x_origin)
-        self.paths["finish"] = gcode_segments_for_view(finish_path, x_origin)
+    def load_toolpaths(self, rough_path, finish_path, x_origin, linear_axis="X"):
+        self.paths["rough"] = gcode_segments_for_view(
+            rough_path, x_origin, linear_axis
+        )
+        self.paths["finish"] = gcode_segments_for_view(
+            finish_path, x_origin, linear_axis
+        )
         self.rebuild()
         self.fit_view()
 
