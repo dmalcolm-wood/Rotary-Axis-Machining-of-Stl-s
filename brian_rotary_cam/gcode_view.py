@@ -13,13 +13,16 @@ from .cam_core import (
 )
 
 
-def gcode_segments_for_view(path, x_origin=0.0):
+def gcode_segments_for_view(path, x_origin=0.0, linear_axis="X"):
     """Return chronological rapid and cutting segments in workpiece coordinates.
 
     A machine move is transformed back around the X rotary axis. Each returned
     segment is a two-row NumPy array, suitable for PyVista line construction.
     """
-    current = {"X": None, "Z": None, "A": 0.0}
+    linear_axis = str(linear_axis).strip().upper()
+    if linear_axis not in ("X", "Y"):
+        raise ValueError("Toolpath longitudinal axis must be X or Y.")
+    current = {linear_axis: None, "Z": None, "A": 0.0}
     rapid_segments = []
     cut_segments = []
 
@@ -28,7 +31,7 @@ def gcode_segments_for_view(path, x_origin=0.0):
         radius = state["Z"]
         return np.array(
             [
-                x_origin + state["X"],
+                x_origin + state[linear_axis],
                 ROTARY_CENTRE_Y + radius * math.cos(angle),
                 ROTARY_CENTRE_Z + radius * math.sin(angle),
             ],
@@ -57,9 +60,9 @@ def gcode_segments_for_view(path, x_origin=0.0):
                 except ValueError:
                     pass
 
-            if previous["X"] is None or previous["Z"] is None:
+            if previous[linear_axis] is None or previous["Z"] is None:
                 continue
-            if current["X"] is None or current["Z"] is None:
+            if current[linear_axis] is None or current["Z"] is None:
                 continue
 
             start = world_point(previous)
@@ -75,6 +78,16 @@ def gcode_segments_for_view(path, x_origin=0.0):
 def segments_to_polydata(pyvista_module, segments):
     """Combine independent two-point segments into one efficient PolyData."""
     if not segments:
+        return None
+    points = np.asarray(segments, dtype=float).reshape((-1, 3))
+    segment_count = len(segments)
+    lines = np.empty((segment_count, 3), dtype=np.int64)
+    lines[:, 0] = 2
+    lines[:, 1] = np.arange(0, segment_count * 2, 2)
+    lines[:, 2] = lines[:, 1] + 1
+    poly = pyvista_module.PolyData(points)
+    poly.lines = lines.ravel()
+    return poly
         return None
     points = np.asarray(segments, dtype=float).reshape((-1, 3))
     segment_count = len(segments)
